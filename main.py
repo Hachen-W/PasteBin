@@ -1,8 +1,31 @@
-import secrets
-from fastapi import FastAPI, HTTPException, Header, Body
+import os
+import asyncpg
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Body, Header, HTTPException
+from dotenv import load_dotenv
 
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    '''Выполняется при запуске: создаем пул подключений'''
+    app.state.pool = await asyncpg.create_pool(DATABASE_URL)
+
+    async with app.state.pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pastes(
+                id varchar(8) PRIMARY KEY,
+                s3_key varchar(255),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+
+    yield
+
+    await app.state.pool.close()
+
+app = FastAPI(lifespan=lifespan)
 
 MAX_PASTE_SIZE_BYTES = 10 * 1024 * 1024
 
