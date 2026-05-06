@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: paste_user
+      POSTGRES_PASSWORD: paste_password
+      POSTGRES_DB: pastebin_db
+    ports:
+      - "5432:5432"
+
+  s3:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password
+    ports:
+      - "9000:9000" # Порт для API (сюда будет стучаться наш Python-код)
+      - "9001:9001" # Порт для веб-интерфейса (здесь можно смотреть загруженные файлы в браузере)
