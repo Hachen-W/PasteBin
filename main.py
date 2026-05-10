@@ -1,37 +1,36 @@
 import os
 import secrets
 import asyncpg
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Body, Header, HTTPException
-from dotenv import load_dotenv
 from pathlib import Path
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, Body, Header, HTTPException
 
+# Загружаем настройки
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 STORAGE_DIR = Path("pasted_texts")
+MAX_PASTE_SIZE_BYTES = 10 * 1024 * 1024 
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    '''Выполняется при запуске: создаем пул подключений'''
+    # При старте: создаем папку и пул БД
     STORAGE_DIR.mkdir(exist_ok=True)
     app.state.pool = await asyncpg.create_pool(DATABASE_URL)
-
     async with app.state.pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS pastes(
-                id varchar(8) PRIMARY KEY,
+                id varchar(12) PRIMARY KEY,
                 s3_key varchar(255),
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
-
     yield
-
+    # При выключении: закрываем БД
     await app.state.pool.close()
 
 app = FastAPI(lifespan=lifespan)
-
-MAX_PASTE_SIZE_BYTES = 10 * 1024 * 1024
 
 
 @app.post("/pastes")
@@ -40,25 +39,19 @@ async def create_paste(
     text: str = Body(..., media_type="text/plain"),
     content_length: int = Header(0, alias="Content-Length")
 ):
-    # Быстрая проверка по заголовку
-    if content_length > MAX_PASTE_SIZE_BYTES:
-         raise HTTPException(status_code=413, detail="Превышен лимит в 10 Мб")
-    
-    # # Точная проверка реального размера текста (на случай, если заголовок подделан)
-    text_bytes = text.encode('utf-8')
-    if len(text_bytes) > MAX_PASTE_SIZE_BYTES:
-         raise HTTPException(status_code=413, detail="Превышен лимит в 10 Мб")
+    # Проверка лимитов
+    if content_length > MAX_PASTE_SIZE_BYTES or len(text.encode()) > MAX_PASTE_SIZE_BYTES:
+         raise HTTPException(status_code=413, detail="Текст слишком большой (макс 10 Мб)")
 
-    paste_id = secrets.token_urlsafe(6)
+    # Генерация ID и сохранение файла
+    paste_id = secrets.token_urlsafe(8)
     file_path = STORAGE_DIR / f"{paste_id}.txt"
 
-    # Сохраняем файл локально
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(text)
 
-    # Записываем в базу путь к файлу
-    pool = request.app.state.pool
-    async with pool.acquire() as conn:
+    # Запись в БД
+    async with request.app.state.pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO pastes (id, s3_key) VALUES ($1, $2)",
             paste_id, str(file_path)
@@ -69,19 +62,14 @@ async def create_paste(
 
 @app.get("/pastes/{paste_id}")
 async def get_paste(request: Request, paste_id: str):
-    pool = request.app.state.pool
-
-    async with pool.acquire() as conn:
+    async with request.app.state.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT s3_key FROM pastes WHERE id = $1", paste_id)
     
     if not row:
-        raise HTTPException(status_code=404, detail="Текст не найден")
-
-    file_path = row['s3_key']
+        raise HTTPException(status_code=404, detail="Запись не найдена")
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return {"id": paste_id, "content": content}
+        with open(row['s3_key'], "r", encoding="utf-8") as f:
+            return {"id": paste_id, "content": f.read()}
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Файл был удален с сервера")
+        raise HTTPException(status_code=404, detail="Файл на диске не найден")
