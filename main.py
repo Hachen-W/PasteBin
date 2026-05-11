@@ -5,6 +5,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Body, Header, HTTPException
+from cryptography.fernet import Fernet
 
 
 # 1. Настройки и конфигурация
@@ -17,6 +18,12 @@ MAX_PASTE_SIZE_BYTES = 10 * 1024 * 1024  # Лимит 10 Мб
 # 2. Жизненный цикл приложения (Lifespan)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    key = os.getenv("ENCRYPTION_KEY")
+    if not key:
+        raise ValueError("ENCRYPTION_KEY не найден в .env!")
+    
+    app.state.fernet = Fernet(key)
+
     # Действия при запуске: создаем папку и подключаемся к БД
     STORAGE_DIR.mkdir(exist_ok=True)
     app.state.pool = await asyncpg.create_pool(DATABASE_URL)
@@ -53,7 +60,8 @@ async def create_paste(
     paste_id = secrets.token_urlsafe(8)
     file_path = STORAGE_DIR / f"{paste_id}.txt"
 
-    with open(file_path, "w", encoding="utf-8") as f:
+    text = request.app.state.fernet.encrypt(text.encode())
+    with open(file_path, "wb") as f:
         f.write(text)
 
     # Сохранение метаданных в БД с расчетом TTL
