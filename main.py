@@ -60,9 +60,9 @@ async def create_paste(
     paste_id = secrets.token_urlsafe(8)
     file_path = STORAGE_DIR / f"{paste_id}.txt"
 
-    text = request.app.state.fernet.encrypt(text.encode())
+    encrypted_content = request.app.state.fernet.encrypt(text.encode())
     with open(file_path, "wb") as f:
-        f.write(text)
+        f.write(encrypted_content)
 
     # Сохранение метаданных в БД с расчетом TTL
     async with request.app.state.pool.acquire() as conn:
@@ -95,7 +95,9 @@ async def get_paste(request: Request, paste_id: str):
         raise HTTPException(status_code=404, detail="Текст не найден или срок его жизни истек")
 
     try:
-        with open(row['s3_key'], "r", encoding="utf-8") as f:
-            return {"id": paste_id, "content": f.read()}
+        with open(row['s3_key'], "rb") as f:
+            decrypted_content = request.app.state.fernet.decrypt(f.read()).decode('utf-8')
+            return {"id": paste_id, "content": decrypted_content}
+
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Файл физически удален с сервера")
